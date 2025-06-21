@@ -32,7 +32,7 @@ if (process.env.NODE_ENV === "production") {
     console.log("Serving index.html from:", path.join(__dirname, "../frontend/dist/index.html"));
 
 
-    app.get("/*", (req, res) => {
+    app.get("/files{/*path}", (req, res) => {
         res.sendFile(path.join(__dirname, "../frontend", "dist", "index.html"));
 });
 }
