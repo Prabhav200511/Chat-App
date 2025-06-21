@@ -31,6 +31,16 @@ if(process.env.NODE_ENV === "production") {
     });
 }
 
+console.log("\n=== Registered Express Routes ===");
+app._router.stack
+  .filter(r => r.route && r.route.path)
+  .forEach(r => {
+    const methods = Object.keys(r.route.methods).join(", ").toUpperCase();
+    console.log(`${methods.padEnd(8)} ${r.route.path}`);
+  });
+console.log("==================================\n");
+
+
 
 const PORT = process.env.PORT||5000
 
