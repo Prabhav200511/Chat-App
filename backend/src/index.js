@@ -12,6 +12,8 @@ import path from "path";
 
 const __dirname = path.resolve(); 
 
+const PORT = process.env.PORT||5000
+
 
 app.use(express.json());
 app.use(cookieParser())
@@ -31,7 +33,7 @@ if(process.env.NODE_ENV === "production") {
     });
 }
 
-const PORT = process.env.PORT||5000
+
 
 server.listen(PORT,() => {
     console.log(`app working on ${PORT}`)
