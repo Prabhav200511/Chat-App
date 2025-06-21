@@ -8,9 +8,12 @@ import {connectDB} from "./lib/db.js"
 import messageRoutes from "./routes/message.routes.js";
 import cors from "cors";
 import { app, server } from "./lib/socket.js";
-import path from "path";
 
-const __dirname = path.resolve(); 
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
 
 
 app.use(express.json());
@@ -26,7 +29,10 @@ app.use("/app/messages",messageRoutes);
 if (process.env.NODE_ENV === "production") {
     app.use(express.static(path.join(__dirname, "../frontend/dist")));
 
-    app.get("*", (req, res) => {
+    console.log("Serving index.html from:", path.join(__dirname, "../frontend/dist/index.html"));
+
+
+    app.get("/*", (req, res) => {
         res.sendFile(path.join(__dirname, "../frontend", "dist", "index.html"));
 });
 }
