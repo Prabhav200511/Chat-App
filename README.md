@@ -1,5 +1,6 @@
 # 💬 Chatty: A Chat-Application
 The application is live at : [Chatty](https://chat-app-1-hnci.onrender.com) 
+
 A sleek, real-time chat application built with modern web technologies. Connect, chat, and collaborate seamlessly with users around the world.
 
 ## 🚀 Features
