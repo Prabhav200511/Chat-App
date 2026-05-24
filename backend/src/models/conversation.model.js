@@ -1,6 +1,8 @@
 import mongoose from "mongoose";
 
 const conversationSchema = mongoose.Schema({
+    isGroup: { type: Boolean, default: false },
+    groupName: { type: String, default: "" },
     participants: {
         type: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
         required: true,

@@ -9,13 +9,13 @@ import { useRef } from 'react';
 
 const ChatContainer = () => {
 
-    const {messages,getMessages,isMessagesLoading,selectedUser,subscribeToMessages,unsubscribeFromMessages} = useChatStore();
+    const {messages,getMessages,isMessagesLoading,selectedUser,subscribeToMessages,unsubscribeFromMessages,getSmartReplies} = useChatStore();
     const {authUser} = useAuthStore();
     const messageEndRef = useRef(null);
 
     useEffect(() => {
         getMessages(selectedUser._id);
-
+        getSmartReplies(selectedUser._id);
         subscribeToMessages();
 
         return () => unsubscribeFromMessages();

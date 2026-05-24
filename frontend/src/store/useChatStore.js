@@ -9,7 +9,9 @@ export const useChatStore = create((set, get) => ({
     selectedUser: null,
     isUsersLoading: false,
     isMessagesLoading: false,
-
+    smartReplies: [],
+    isRepliesLoading: false,
+    
     getUsers: async () => {
         set({ isUsersLoading: true });
         try {
@@ -80,5 +82,18 @@ export const useChatStore = create((set, get) => ({
         socket.off("newMessage");
     },
 
-    setSelectedUser: (selectedUser) => set({ selectedUser })
+    setSelectedUser: (selectedUser) => set({ selectedUser }),
+
+    getSmartReplies: async (userId) => {
+        set({ isRepliesLoading: true, smartReplies: [] });
+        try {
+            const res = await axiosInstance.get(`app/messages/smart-replies/${userId}`);
+            set({ smartReplies: res.data });
+        } catch (error) {
+            console.error("Failed to fetch smart replies", error);
+        } finally {
+            set({ isRepliesLoading: false });
+        }
+    }
+    
 }))

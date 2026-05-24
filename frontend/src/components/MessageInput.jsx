@@ -9,7 +9,7 @@ const MessageInput = () => {
     const [text,setText] = useState("");
     const [imagePreview,setImagePreview] = useState(null);
     const fileInputRef = useRef(null);
-    const {sendMessage} = useChatStore();
+    const {sendMessage,smartReplies,isRepliesLoading} = useChatStore();
 
     const handleImageChange = (e) => {
         const file = e.target.files[0];
@@ -70,6 +70,22 @@ const MessageInput = () => {
           </div>
         </div>
       )}
+
+      <div className="flex gap-2 mb-2 overflow-x-auto px-4">
+        {isRepliesLoading && (
+            <span className="text-xs text-gray-500 animate-pulse">AI is thinking...</span>
+        )}
+        
+        {!isRepliesLoading && smartReplies.map((reply, idx) => (
+            <button
+                key={idx}
+                onClick={() => setText(reply)} // Assuming 'text' is your input state variable
+                className="px-3 py-1 text-sm bg-base-200 hover:bg-primary hover:text-white rounded-full transition-colors whitespace-nowrap"
+            >
+                ✨ {reply}
+            </button>
+        ))}
+    </div>
 
       <form onSubmit={handleSendMessage} className="flex items-center gap-2">
         <div className="flex-1 flex gap-2">
