@@ -5,9 +5,12 @@ import { Users, MailPlus } from 'lucide-react';
 import { useAuthStore } from '../store/useAuthStore';
 
 const Sidebar = () => {
-    const { getUsers, users, selectedUser, setSelectedUser, isUserLoading, inviteByEmail } = useChatStore();
+    const { getUsers, users, selectedUser, setSelectedUser, isUserLoading, inviteByEmail, createGroup } = useChatStore();
     const [showOnlineOnly, setShowOnlineOnly] = useState(false);
     const [inviteEmail, setInviteEmail] = useState("");
+    const [isCreatingGroup, setIsCreatingGroup] = useState(false);
+    const [groupName, setGroupName] = useState("");
+    const [groupEmails, setGroupEmails] = useState("");
 
     const { onlineUsers } = useAuthStore();
 
@@ -34,18 +37,65 @@ const Sidebar = () => {
                     <span className="font-medium hidden lg:block">Contacts</span>
                 </div>
                 
-                <form onSubmit={handleInvite} className="mt-4 hidden lg:flex items-center gap-2">
-                    <input
-                        type="email"
-                        placeholder="Invite by email..."
-                        value={inviteEmail}
-                        onChange={(e) => setInviteEmail(e.target.value)}
-                        className="input input-sm input-bordered w-full"
-                    />
-                    <button type="submit" className="btn btn-sm btn-square btn-primary">
-                        <MailPlus className="size-4" />
-                    </button>
-                </form>
+                <div className="mt-4 hidden lg:flex flex-col gap-2">
+                    <div className="flex gap-2 mb-2">
+                        <button 
+                            className={`btn btn-xs ${!isCreatingGroup ? 'btn-primary' : 'btn-ghost'}`}
+                            onClick={() => setIsCreatingGroup(false)}
+                        >
+                            Invite
+                        </button>
+                        <button 
+                            className={`btn btn-xs ${isCreatingGroup ? 'btn-primary' : 'btn-ghost'}`}
+                            onClick={() => setIsCreatingGroup(true)}
+                        >
+                            New Group
+                        </button>
+                    </div>
+
+                    {!isCreatingGroup ? (
+                        <form onSubmit={handleInvite} className="flex items-center gap-2">
+                            <input
+                                type="email"
+                                placeholder="Invite by email..."
+                                value={inviteEmail}
+                                onChange={(e) => setInviteEmail(e.target.value)}
+                                className="input input-sm input-bordered w-full"
+                            />
+                            <button type="submit" className="btn btn-sm btn-square btn-primary">
+                                <MailPlus className="size-4" />
+                            </button>
+                        </form>
+                    ) : (
+                        <form onSubmit={(e) => {
+                            e.preventDefault();
+                            if (!groupName || !groupEmails) return;
+                            const emailsArray = groupEmails.split(",").map(email => email.trim());
+                            createGroup(groupName, emailsArray);
+                            setGroupName("");
+                            setGroupEmails("");
+                            setIsCreatingGroup(false);
+                        }} className="flex flex-col gap-2 p-2 bg-base-200 rounded-lg">
+                            <input
+                                type="text"
+                                placeholder="Group Name"
+                                value={groupName}
+                                onChange={(e) => setGroupName(e.target.value)}
+                                className="input input-sm input-bordered w-full"
+                            />
+                            <input
+                                type="text"
+                                placeholder="Emails (comma separated)"
+                                value={groupEmails}
+                                onChange={(e) => setGroupEmails(e.target.value)}
+                                className="input input-sm input-bordered w-full text-xs"
+                            />
+                            <button type="submit" className="btn btn-sm btn-primary w-full">
+                                Create Group
+                            </button>
+                        </form>
+                    )}
+                </div>
 
                 <div className="mt-3 hidden lg:flex items-center gap-2">
                     <label className="cursor-pointer flex items-center gap-2">

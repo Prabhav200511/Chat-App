@@ -94,6 +94,19 @@ export const useChatStore = create((set, get) => ({
         } finally {
             set({ isRepliesLoading: false });
         }
+    },
+
+    createGroup: async (groupName, emailsArray) => {
+        try {
+            await axiosInstance.post("app/messages/group", { 
+                groupName, 
+                emails: emailsArray 
+            });
+            toast.success("Group created successfully!");
+            get().getUsers(); // Refresh the sidebar
+        } catch (error) {
+            toast.error(error.response?.data?.message || "Failed to create group");
+        }
     }
     
 }))
