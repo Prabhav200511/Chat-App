@@ -2,7 +2,6 @@
 
 ![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
 ![Version](https://img.shields.io/badge/version-1.0.0-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
 
 **🚀 Live Demo:** [https://chat-app-0jkc.onrender.com/](https://chat-app-0jkc.onrender.com/)  
 *(Note: This application is hosted on Render's free tier. If the server has been inactive, the initial load may take 30–50 seconds to spin up. Thank you for your patience!)*
