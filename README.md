@@ -1,8 +1,7 @@
 # Chatty 💬
 
 ![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
-![Version](https://img.shields.io/badge/version-1.0.0-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
+![Version](https://img.shields.io/badge/version-1.0.1-blue)
 
 Chatty is a full-stack, real-time chat application designed to facilitate seamless, low-latency communication. Built with performance and user experience in mind, it leverages WebSockets to enable instant messaging, active user tracking, and secure authentication.
 
