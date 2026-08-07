@@ -26,6 +26,17 @@ Chatty is a full-stack, real-time chat application designed to facilitate seamle
 ### Prerequisites
 Make sure you have [Node.js](https://nodejs.org/) and [MongoDB](https://www.mongodb.com/) installed on your machine.
 
+## ⚙️ System Architecture & Scaling
+
+[cite_start]Chatty is a full-stack real-time messaging application built on the MERN stack[cite: 52]. [cite_start]It utilizes **Socket.io** for instant live messaging, **Zustand** for client-side state management without full-page reloads, and **JWT** for secure, HTTP-only cookie-based authentication[cite: 53, 111]. 
+
+### Current Setup & Future Roadmap
+[cite_start]Currently, the backend operates on a single-server setup, keeping track of connected users in memory[cite: 105, 106]. [cite_start]While efficient for low traffic, running a single thread for both REST API requests and WebSocket connections can become a bottleneck as concurrent users grow[cite: 87, 88].
+
+[cite_start]**WIP: Horizontal Scaling** To safely scale out to multiple backend servers behind a load balancer, the architecture requires a central Pub/Sub broker so servers can broadcast messages to each other[cite: 94, 101]. 
+
+[cite_start]*We are currently in the process of integrating **[MyCache](https://github.com/Prabhav200511/MyCache)**—my custom-built, Redis-compatible in-memory database written in Go. [cite_start]Once integrated, MyCache will act as the high-speed middleman, instantly broadcasting events across all connected Node.js instances to ensure seamless real-time delivery regardless of which server a user is connected to[cite: 102, 103].*
+
 ### Installation
 
 1. **Clone the repository:**
