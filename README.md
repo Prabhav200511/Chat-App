@@ -21,11 +21,6 @@ Chatty is a full-stack, real-time chat application designed to facilitate seamle
 * **Real-Time Communication:** Socket.io
 * **Database:** MongoDB (Mongoose)
 
-## 🚀 Quick Start
-
-### Prerequisites
-Make sure you have [Node.js](https://nodejs.org/) and [MongoDB](https://www.mongodb.com/) installed on your machine.
-
 ## ⚙️ System Architecture & Scaling
 
 [cite_start]Chatty is a full-stack real-time messaging application built on the MERN stack[cite: 52]. [cite_start]It utilizes **Socket.io** for instant live messaging, **Zustand** for client-side state management without full-page reloads, and **JWT** for secure, HTTP-only cookie-based authentication[cite: 53, 111]. 
