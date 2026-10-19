@@ -16,4 +16,8 @@ const conversationSchema = mongoose.Schema({
     // See scripts/migrate-phase1.js for the one-time backfill.
 }, { timestamps: true })
 
+// Every socket connect now runs `find({ participants: userId })` to join all of
+// the user's rooms, and conversationAccess/sidebar queries already filter on it.
+conversationSchema.index({ participants: 1 });
+
 export default mongoose.model("Conversation", conversationSchema);

@@ -95,7 +95,10 @@ export const useAuthStore = create((set , get) => ({
 
     connectSocket: () => {
         const {authUser} = get();
-        if(!authUser||get().socket?.connected) return;
+        // A socket instance must never be duplicated. The old check only
+        // guarded `connected`, so a disconnected-but-alive socket spawned a
+        // second instance with duplicated listeners.
+        if(!authUser||get().socket) return;
 
         // Identity comes from the httpOnly JWT cookie, never from a query param.
         const socket = io(HOME_URL, {
@@ -106,12 +109,35 @@ export const useAuthStore = create((set , get) => ({
 
         set({socket:socket})
 
-        socket.on("getOnlineUsers", (userIds) => {
-            set({onlineUsers: userIds});
+        // Delta presence: a snapshot on (re)connect plus transition-only
+        // deltas. Handlers enforce set semantics so interleaved/duplicate
+        // events are idempotent by design.
+        socket.on("presence:snapshot", (userIds) => {
+            set({onlineUsers: [...new Set(userIds)]});
+        })
+
+        socket.on("presence:join", ({userId}) => {
+            set((state) =>
+                state.onlineUsers.includes(userId)
+                    ? state
+                    : {onlineUsers: [...state.onlineUsers, userId]}
+            );
+        })
+
+        socket.on("presence:leave", ({userId}) => {
+            set((state) => ({
+                onlineUsers: state.onlineUsers.filter((id) => id !== userId),
+            }));
         })
     },
 
     disconnectSocket: () => {
-        if (get().socket?.connected) get().socket.disconnect();
+        const socket = get().socket;
+        if (!socket) return;
+        // Drop listeners and presence state so a logout/login as a different
+        // user can never inherit stale events.
+        socket.removeAllListeners();
+        socket.disconnect();
+        set({socket:null, onlineUsers:[]});
     }
 }));

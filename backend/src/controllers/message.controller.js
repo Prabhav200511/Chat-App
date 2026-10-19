@@ -2,7 +2,8 @@ import cloudinary from "../lib/cloudinary.js";
 import User from "../models/user.model.js";
 import Message from "../models/message.model.js";
 import Conversation from "../models/conversation.model.js";
-import { getIO } from "../lib/socket.js";
+import { getIO, joinUsersToConversation } from "../lib/socket.js";
+import { conversationRoom } from "../lib/rooms.js";
 import {
     getAuthorizedConversation,
     respondNotFound,
@@ -35,6 +36,10 @@ export const inviteUserByEmail = async (req, res) => {
         conversation = await Conversation.create({
             participants: [myId, targetUser._id],
         });
+
+        // Both sides of a fresh invite may already be connected — put their
+        // live tabs straight into the new conversation's room.
+        joinUsersToConversation(conversation._id, conversation.participants);
 
         res.status(201).json({ message: "Invite successful", conversation });
     } catch (error) {
@@ -164,7 +169,7 @@ export const sendMessage = async (req, res) => {
             image: imageUrl,
         });
 
-        getIO()?.to(conversation._id.toString()).emit("newMessage", newMessage);
+        getIO()?.to(conversationRoom(conversation._id)).emit("newMessage", newMessage);
 
         return res.status(201).json(newMessage);
     } catch (error) {
@@ -261,6 +266,10 @@ export const createGroupChat = async (req, res) => {
             groupName: groupName,
             participants: participantIds,
         });
+
+        // Connected members join the group room immediately; offline members
+        // pick it up on next connect.
+        joinUsersToConversation(groupConversation._id, groupConversation.participants);
 
         res.status(201).json({ message: "Group created successfully", conversation: groupConversation });
     } catch (error) {

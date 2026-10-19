@@ -5,9 +5,9 @@ import { createApp } from "../src/app.js";
 import {
     initSocket,
     getIO,
-    getRecieverSocketId,
     closeSocket,
 } from "../src/lib/socket.js";
+import { userRoom, conversationRoom } from "../src/lib/rooms.js";
 import { signup, createConversation, sendMessage, sleep } from "./helpers.js";
 
 describe("IDOR: socket identity and room membership", () => {
@@ -90,9 +90,11 @@ describe("IDOR: socket identity and room membership", () => {
             userId: dave.user._id,
         });
 
-        // The server must map the authenticated user (Alice), not the forged one.
-        expect(getRecieverSocketId(alice.user._id)).toBe(socket.id);
-        expect(getRecieverSocketId(dave.user._id)).toBeUndefined();
+        // The server must map the authenticated user (Alice), not the forged
+        // one — the socket sits in Alice's user room and never in Dave's.
+        const rooms = getIO().sockets.adapter.rooms;
+        expect(rooms.get(userRoom(alice.user._id))?.has(socket.id)).toBe(true);
+        expect(rooms.get(userRoom(dave.user._id))?.has(socket.id)).toBeFalsy();
     });
 
     it.each(["not-a-function", 42, { ok: true }])(
@@ -108,7 +110,9 @@ describe("IDOR: socket identity and room membership", () => {
     it("normalizes uppercase conversation IDs to the broadcast room", async () => {
         const socket = await connectSocket(alice.cookie);
         expect(await joinRoom(socket, convAC._id.toUpperCase())).toEqual({ ok: true });
-        expect(getIO().sockets.adapter.rooms.get(convAC._id)?.has(socket.id)).toBe(true);
+        expect(
+            getIO().sockets.adapter.rooms.get(conversationRoom(convAC._id))?.has(socket.id)
+        ).toBe(true);
     });
 
     it("only lets participants join a conversation room", async () => {
@@ -124,7 +128,7 @@ describe("IDOR: socket identity and room membership", () => {
         const bogus = await joinRoom(socketB, "definitely-not-an-id");
         expect(bogus.ok).toBe(false);
 
-        const room = getIO().sockets.adapter.rooms.get(convAC._id);
+        const room = getIO().sockets.adapter.rooms.get(conversationRoom(convAC._id));
         expect(room?.has(socketA.id)).toBe(true);
         expect(room?.has(socketB.id)).toBeFalsy();
     });
@@ -143,7 +147,7 @@ describe("IDOR: socket identity and room membership", () => {
         socketB.on("newMessage", (m) => bMessages.push(m));
 
         getIO()
-            .to(convAC._id)
+            .to(conversationRoom(convAC._id))
             .emit("newMessage", { _id: "probe", text: "secret" });
 
         const message = await receivedByA;

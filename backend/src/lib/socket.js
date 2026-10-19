@@ -3,27 +3,40 @@ import jwt from "jsonwebtoken";
 import { parse as parseCookie } from "cookie";
 import mongoose from "mongoose";
 import Conversation from "../models/conversation.model.js";
+import * as presence from "./presence.js";
+import { conversationRoom, userRoom } from "./rooms.js";
 
 let io = null;
-
-// userId -> Set<socketId> (a user may be connected from several tabs/devices)
-const userSocketMap = new Map();
 
 export function getIO() {
     return io;
 }
 
-export function getRecieverSocketId(userId) {
-    const sockets = userSocketMap.get(String(userId));
-    if (!sockets || sockets.size === 0) return undefined;
-    return [...sockets][sockets.size - 1];
+/**
+ * Server-side batch join: puts every connected tab of every participant into
+ * the conversation's room. Called from REST handlers (invite, group create)
+ * where there is no socket context — an offline participant simply joins on
+ * next connect via the auto-join query in initSocket().
+ *
+ * NOTE: there is no participant-removal path today. If one is added it must
+ * call `ioRef.in(participantIds.map(userRoom)).socketsLeave(conversationRoom(id))`.
+ */
+export function joinUsersToConversation(conversationId, participantIds) {
+    const ioRef = getIO();
+    if (!ioRef || !participantIds?.length) return; // REST-only test apps: no-op
+    ioRef
+        .in(participantIds.map(userRoom))
+        .socketsJoin(conversationRoom(conversationId));
 }
 
 /**
  * Attaches Socket.IO to an http server.
  * - Handshake is authenticated with the same JWT cookie the REST API uses;
  *   the client-sent query.userId is intentionally ignored.
- * - join_room only joins conversations the authenticated user participates in.
+ * - On connect the socket joins user:<id> (presence) plus EVERY conversation
+ *   room the user participates in, so delivery never depends on the client
+ *   having opened a chat first — and a reconnect re-establishes all rooms.
+ * - join_room stays as an idempotent ensure that heals a failed auto-join.
  */
 export function initSocket(httpServer) {
     io = new Server(httpServer, {
@@ -49,14 +62,15 @@ export function initSocket(httpServer) {
         }
     });
 
-    io.on("connection", (socket) => {
+    io.on("connection", async (socket) => {
         const userId = socket.userId;
-        console.log("A user has connected", socket.id);
 
-        if (!userSocketMap.has(userId)) userSocketMap.set(userId, new Set());
-        userSocketMap.get(userId).add(socket.id);
-        io.emit("getOnlineUsers", [...userSocketMap.keys()]);
+        // 1. Presence: joins user:<id>, tracks the tab, broadcasts deltas.
+        presence.onConnect(io, socket);
 
+        // Handlers are registered before the auto-join query below so a
+        // client emitting join_room (or disconnecting) mid-query is never
+        // met with a missing listener.
         socket.on("join_room", async (conversationId, ack) => {
             const respond = typeof ack === "function" ? ack : () => {};
             try {
@@ -77,7 +91,7 @@ export function initSocket(httpServer) {
                     return;
                 }
 
-                await socket.join(roomId);
+                await socket.join(conversationRoom(roomId));
                 respond({ ok: true });
             } catch {
                 respond({ ok: false, message: "Could not join conversation" });
@@ -85,15 +99,22 @@ export function initSocket(httpServer) {
         });
 
         socket.on("disconnect", () => {
-            console.log("A user has disconnected: ", socket.id);
-
-            const sockets = userSocketMap.get(userId);
-            if (sockets) {
-                sockets.delete(socket.id);
-                if (sockets.size === 0) userSocketMap.delete(userId);
-            }
-            io.emit("getOnlineUsers", [...userSocketMap.keys()]);
+            presence.onDisconnect(io, socket);
         });
+
+        // 2+3. Join the user's entire conversation set up front: one indexed
+        // query, one bulk socket.join. A DB failure only means the client's
+        // join_room ensure has to heal this socket — the connection survives.
+        try {
+            const conversations = await Conversation.find({ participants: userId })
+                .select("_id")
+                .lean();
+            if (conversations.length > 0) {
+                await socket.join(conversations.map((c) => conversationRoom(c._id)));
+            }
+        } catch (error) {
+            console.error("Auto-join of conversation rooms failed:", error);
+        }
     });
 
     return io;
