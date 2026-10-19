@@ -1,15 +1,19 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
 import http from "node:http";
+import request from "supertest";
 import { io as ioc } from "socket.io-client";
 import { createApp } from "../src/app.js";
 import { initSocket, getIO, closeSocket } from "../src/lib/socket.js";
 import * as presence from "../src/lib/presence.js";
 import { userRoom, conversationRoom } from "../src/lib/rooms.js";
+import Conversation from "../src/models/conversation.model.js";
 import {
     signup,
     createConversation,
     sendMessage,
     sleep,
+    app,
+    authed,
 } from "./helpers.js";
 
 /**
@@ -40,6 +44,7 @@ describe("realtime: rooms, presence deltas, lifecycle joins", () => {
                 transports: ["websocket"],
                 reconnection: false,
                 timeout: 4000,
+                autoConnect: false,
             });
             clients.push(socket);
 
@@ -51,6 +56,8 @@ describe("realtime: rooms, presence deltas, lifecycle joins", () => {
                 leaves: [],
                 legacy: [],
                 messages: [],
+                conversations: [],
+                ready: [],
             };
             const filter = (list, userId) =>
                 list.filter((e) => String(e.userId) === String(userId)).length;
@@ -60,17 +67,21 @@ describe("realtime: rooms, presence deltas, lifecycle joins", () => {
             socket.on("presence:leave", (p) => events.leaves.push(p));
             socket.on("getOnlineUsers", (ids) => events.legacy.push(ids));
             socket.on("newMessage", (m) => events.messages.push(m));
+            socket.on("conversation:new", (m) => events.conversations.push(m));
 
-            socket.once("connect", () =>
+            const timer = setTimeout(() => reject(new Error("connect timeout")), 4500);
+            socket.on("realtime:ready", (ready) => events.ready.push(ready));
+            socket.once("realtime:ready", () => {
+                clearTimeout(timer);
                 resolve({
                     socket,
                     events,
                     joins: (userId) => filter(events.joins, userId),
                     leaves: (userId) => filter(events.leaves, userId),
-                })
-            );
-            socket.once("connect_error", reject);
-            setTimeout(() => reject(new Error("connect timeout")), 4500);
+                });
+            });
+            socket.once("connect_error", (error) => { clearTimeout(timer); reject(error); });
+            socket.connect();
         });
 
     /** Waits until the server-side auto-join query has put this socket in its rooms. */
@@ -95,8 +106,10 @@ describe("realtime: rooms, presence deltas, lifecycle joins", () => {
         }
         // Barrier: the registry only empties once every server-side
         // disconnect handler has run, so the next test starts from zero tabs.
-        await waitFor(() => presence.getOnlineUserIds().length === 0).catch(() => {});
+        await waitFor(() => presence.getOnlineUserIds().length === 0);
+        expect(presence.getOnlineUserIds()).toEqual([]);
         presence.reset();
+        vi.restoreAllMocks();
     });
 
     afterAll(async () => {
@@ -107,6 +120,7 @@ describe("realtime: rooms, presence deltas, lifecycle joins", () => {
         if (server?.listening) {
             await new Promise((res) => server.close(res));
         }
+        expect(getIO()).toBeNull();
     });
 
     it("auto-joins user:<me> and every conversation room, but no non-member rooms", async () => {
@@ -250,7 +264,7 @@ describe("realtime: rooms, presence deltas, lifecycle joins", () => {
         a.socket.disconnect();
         await waitFor(() => presence.getOnlineUserIds().length === 0);
 
-        const reconnected = new Promise((res) => a.socket.once("connect", res));
+        const reconnected = new Promise((res) => a.socket.once("realtime:ready", res));
         a.socket.connect();
         await reconnected;
         await waitInRoom(room, a.socket); // new socket id, still in the room
@@ -282,5 +296,128 @@ describe("realtime: rooms, presence deltas, lifecycle joins", () => {
         await waitFor(() =>
             daveConn.events.messages.some((m) => m.text === "hi dave")
         );
+    });
+
+    it("reports readiness only after discovery completes, even for users with no conversations", async () => {
+        const alice = await signup("Ready Alice");
+        let finish, started;
+        const query = new Promise((resolve) => { finish = resolve; });
+        const queried = new Promise((resolve) => { started = resolve; });
+        vi.spyOn(Conversation, "find").mockImplementationOnce(() => ({
+            select: () => ({ lean: () => { started(); return query; } }),
+        }));
+        const pending = connect(alice.cookie);
+        await queried;
+        expect(presence.isOnline(alice.user._id)).toBe(false);
+        finish([]);
+        const connection = await pending;
+        expect(connection.events.ready).toEqual([{ roomsReady: true }]);
+        expect(connection.events.snapshots).toHaveLength(1);
+    });
+
+    it("does not add ghost presence after disconnect during room discovery", async () => {
+        const alice = await signup("Disconnect Alice");
+        let finish, started;
+        const query = new Promise((resolve) => { finish = resolve; });
+        const queried = new Promise((resolve) => { started = resolve; });
+        vi.spyOn(Conversation, "find").mockImplementationOnce(() => ({
+            select: () => ({ lean: () => { started(); return query; } }),
+        }));
+        const socket = ioc(url, {
+            extraHeaders: { Cookie: alice.cookie }, transports: ["websocket"], reconnection: false,
+        });
+        clients.push(socket);
+        const events = [];
+        socket.on("presence:snapshot", (data) => events.push(data));
+        socket.on("realtime:ready", (data) => events.push(data));
+        await queried;
+        socket.disconnect();
+        await waitFor(() => getIO().sockets.sockets.size === 0);
+        finish([]);
+        await sleep(50); // bounded observation after the deferred lookup resolves
+        expect(events).toEqual([]);
+        expect(presence.isOnline(alice.user._id)).toBe(false);
+    });
+
+    it("reports failed discovery and keeps the authorized join fallback usable", async () => {
+        const alice = await signup("Fallback Alice");
+        const bob = await signup("Fallback Bob");
+        const conv = await createConversation(alice, bob.email);
+        vi.spyOn(console, "error").mockImplementation(() => {});
+        vi.spyOn(Conversation, "find").mockImplementationOnce(() => ({
+            select: () => ({ lean: () => Promise.reject(new Error("temporary DB failure")) }),
+        }));
+        const connection = await connect(alice.cookie);
+        expect(connection.events.ready).toEqual([{ roomsReady: false }]);
+        const ack = await connection.socket.timeout(4000).emitWithAck("join_room", conv._id);
+        expect(ack).toEqual({ ok: true });
+        await waitInRoom(conversationRoom(conv._id), connection.socket);
+    });
+
+    it("announces new conversations to all participant tabs and excludes outsiders", async () => {
+        const alice = await signup("Announce Alice");
+        const bob = await signup("Announce Bob");
+        const outsider = await signup("Announce Outsider");
+        const tabs = await Promise.all([connect(alice.cookie), connect(alice.cookie), connect(bob.cookie)]);
+        const other = await connect(outsider.cookie);
+        const conv = await createConversation(alice, bob.email);
+        for (const tab of tabs) {
+            await waitFor(() => tab.events.conversations.length === 1);
+            expect(tab.events.conversations).toEqual([{ conversationId: conv._id }]);
+            await waitInRoom(conversationRoom(conv._id), tab.socket);
+        }
+        expect(other.events.conversations).toEqual([]);
+        const res = await sendMessage(alice, conv._id, { text: "immediate delivery" });
+        expect(res.status).toBe(201);
+        for (const tab of tabs) await waitFor(() => tab.events.messages.length === 1);
+        expect(other.events.messages).toEqual([]);
+    });
+
+    it("deduplicates the creator and announces groups to each unique participant", async () => {
+        const alice = await signup("Group Alice");
+        const bob = await signup("Group Bob");
+        const carol = await signup("Group Carol");
+        const tabs = await Promise.all([connect(alice.cookie), connect(bob.cookie), connect(carol.cookie)]);
+        const invalid = await request(app).post("/app/messages/group").set(authed(alice.cookie))
+            .send({ groupName: "Not three people", emails: [alice.email, bob.email] });
+        expect(invalid.status).toBe(400);
+        const valid = await request(app).post("/app/messages/group").set(authed(alice.cookie))
+            .send({ groupName: "Three people", emails: [alice.email, bob.email, carol.email, bob.email] });
+        expect(valid.status).toBe(201);
+        expect(valid.body.conversation.participants).toHaveLength(3);
+        for (const tab of tabs) {
+            await waitFor(() => tab.events.conversations.length === 1);
+            expect(tab.events.conversations[0].conversationId).toBe(valid.body.conversation._id);
+        }
+    });
+
+    it("does not return a failed create when notification fails after persistence", async () => {
+        const alice = await signup("Persisted Alice");
+        const bob = await signup("Persisted Bob");
+        vi.spyOn(console, "error").mockImplementation(() => {});
+        vi.spyOn(getIO(), "in").mockImplementationOnce(() => { throw new Error("adapter failed"); });
+        const conv = await createConversation(alice, bob.email);
+        expect(await Conversation.exists({ _id: conv._id })).toBeTruthy();
+    });
+
+    it("discovers conversations created while the connection query is in flight", async () => {
+        const alice = await signup("Concurrent Alice");
+        const bob = await signup("Concurrent Bob");
+        let finish, started;
+        const query = new Promise((resolve) => { finish = resolve; });
+        const queried = new Promise((resolve) => { started = resolve; });
+        vi.spyOn(Conversation, "find").mockImplementationOnce(() => ({
+            select: () => ({ lean: () => { started(); return query; } }),
+        }));
+        const pending = connect(alice.cookie);
+        await queried;
+        // Deliberately return a stale/empty query result. The user-room join
+        // must cover conversations created after the query's snapshot.
+        const conv = await createConversation(alice, bob.email);
+        finish([]);
+        const connection = await pending;
+        await waitInRoom(conversationRoom(conv._id), connection.socket);
+        expect((await sendMessage(bob, conv._id, { text: "during initialization" })).status).toBe(201);
+        await waitFor(() => connection.events.messages.length === 1);
     });
 });

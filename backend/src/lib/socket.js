@@ -24,9 +24,16 @@ export function getIO() {
 export function joinUsersToConversation(conversationId, participantIds) {
     const ioRef = getIO();
     if (!ioRef || !participantIds?.length) return; // REST-only test apps: no-op
-    ioRef
-        .in(participantIds.map(userRoom))
-        .socketsJoin(conversationRoom(conversationId));
+    try {
+        const rooms = [...new Set(participantIds.map(userRoom))];
+        // The current in-memory adapter completes this join synchronously.
+        ioRef.in(rooms).socketsJoin(conversationRoom(conversationId));
+        ioRef.to(rooms).emit("conversation:new", { conversationId: String(conversationId) });
+    } catch (error) {
+        // Persistence already succeeded. Reconciliation on reconnect/refresh
+        // recovers the conversation without misleading callers into retrying creation.
+        console.error("Conversation notification failed:", error);
+    }
 }
 
 /**
@@ -39,14 +46,15 @@ export function joinUsersToConversation(conversationId, participantIds) {
  * - join_room stays as an idempotent ensure that heals a failed auto-join.
  */
 export function initSocket(httpServer) {
-    io = new Server(httpServer, {
+    const ioRef = new Server(httpServer, {
         cors: {
             origin: process.env.CLIENT_ORIGIN || "http://localhost:5173",
             credentials: true,
         },
     });
+    io = ioRef;
 
-    io.use((socket, next) => {
+    ioRef.use((socket, next) => {
         try {
             const cookies = parseCookie(socket.handshake.headers.cookie || "");
             const token = cookies.jwt;
@@ -62,11 +70,8 @@ export function initSocket(httpServer) {
         }
     });
 
-    io.on("connection", async (socket) => {
+    ioRef.on("connection", (socket) => {
         const userId = socket.userId;
-
-        // 1. Presence: joins user:<id>, tracks the tab, broadcasts deltas.
-        presence.onConnect(io, socket);
 
         // Handlers are registered before the auto-join query below so a
         // client emitting join_room (or disconnecting) mid-query is never
@@ -99,25 +104,32 @@ export function initSocket(httpServer) {
         });
 
         socket.on("disconnect", () => {
-            presence.onDisconnect(io, socket);
+            presence.onDisconnect(ioRef, socket);
         });
 
-        // 2+3. Join the user's entire conversation set up front: one indexed
-        // query, one bulk socket.join. A DB failure only means the client's
-        // join_room ensure has to heal this socket — the connection survives.
-        try {
-            const conversations = await Conversation.find({ participants: userId })
-                .select("_id")
-                .lean();
-            if (conversations.length > 0) {
+        const initialize = async () => {
+            let roomsReady = false;
+            try {
+                // Join the user room BEFORE the query: concurrent creations
+                // either appear in the query or reach this socket through that room.
+                await socket.join(userRoom(userId));
+                if (!socket.connected) return;
+                const conversations = await Conversation.find({ participants: userId })
+                    .select("_id").lean();
+                if (!socket.connected) return;
                 await socket.join(conversations.map((c) => conversationRoom(c._id)));
+                roomsReady = true;
+            } catch (error) {
+                console.error("Auto-join of conversation rooms failed:", error);
             }
-        } catch (error) {
-            console.error("Auto-join of conversation rooms failed:", error);
-        }
+            if (!socket.connected) return;
+            presence.onConnect(ioRef, socket);
+            socket.emit("realtime:ready", { roomsReady });
+        };
+        void initialize().catch((error) => console.error("Socket initialization failed:", error));
     });
 
-    return io;
+    return ioRef;
 }
 
 export function closeSocket(callback) {
@@ -125,5 +137,7 @@ export function closeSocket(callback) {
         callback?.();
         return;
     }
-    io.close(callback);
+    const closing = io;
+    io = null;
+    closing.close(callback);
 }

@@ -9,17 +9,21 @@ import { useRef } from 'react';
 
 const ChatContainer = () => {
 
-    const {messages,getMessages,isMessagesLoading,selectedUser,subscribeToMessages,unsubscribeFromMessages,getSmartReplies,hasMore,loadOlderMessages,isOlderMessagesLoading} = useChatStore();
-    const {authUser} = useAuthStore();
+    const {messages,getMessages,isMessagesLoading,selectedUser,subscribeToMessages,getSmartReplies,hasMore,loadOlderMessages,isOlderMessagesLoading} = useChatStore();
+    const {authUser,socket,realtimeEpoch} = useAuthStore();
     const messageEndRef = useRef(null);
 
     useEffect(() => {
-        getMessages(selectedUser._id);
-        getSmartReplies(selectedUser._id);
-        subscribeToMessages();
+        return subscribeToMessages(socket);
+    },[selectedUser._id,socket,subscribeToMessages]);
 
-        return () => unsubscribeFromMessages();
-    },[selectedUser._id,getMessages,subscribeToMessages,unsubscribeFromMessages]);
+    useEffect(() => {
+        getMessages(selectedUser._id, { ensureJoined: true });
+    },[selectedUser._id,getMessages,realtimeEpoch]);
+
+    useEffect(() => {
+        getSmartReplies(selectedUser._id);
+    },[selectedUser._id,getSmartReplies]);
 
     // Scroll to the newest message when the tail changes — not when older
     // messages are prepended, which would yank the viewport down.

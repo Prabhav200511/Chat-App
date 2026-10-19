@@ -253,8 +253,9 @@ export const createGroupChat = async (req, res) => {
         const usersToAdd = await User.find({ email: { $in: emails } });
 
         // 2. Extract their IDs and add the creator's ID
-        const participantIds = usersToAdd.map((user) => user._id);
-        participantIds.push(myId);
+        const participantIds = [...new Set([
+            ...usersToAdd.map((user) => String(user._id)), String(myId),
+        ])];
 
         if (participantIds.length < 3) {
             return res.status(400).json({ message: "A group must have at least 3 people (you + 2 others)" });

@@ -5,14 +5,15 @@ import { Users, MailPlus } from 'lucide-react';
 import { useAuthStore } from '../store/useAuthStore';
 
 const Sidebar = () => {
-    const { getUsers, users, selectedUser, setSelectedUser, isUserLoading, inviteByEmail, createGroup } = useChatStore();
+    const { getUsers, users, selectedUser, setSelectedUser, isUsersLoading, inviteByEmail, createGroup, subscribeToConversations } = useChatStore();
     const [showOnlineOnly, setShowOnlineOnly] = useState(false);
     const [inviteEmail, setInviteEmail] = useState("");
     const [isCreatingGroup, setIsCreatingGroup] = useState(false);
     const [groupName, setGroupName] = useState("");
     const [groupEmails, setGroupEmails] = useState("");
 
-    const { onlineUsers } = useAuthStore();
+    const { onlineUsers, socket, realtimeEpoch, authUser } = useAuthStore();
+    const accountId = authUser?._id;
 
     // Sidebar entries are keyed by conversation id; presence comes from the
     // other participant (groups are never "online").
@@ -22,8 +23,10 @@ const Sidebar = () => {
     const filteredUsers = showOnlineOnly ? users.filter(isOnline) : users;
 
     useEffect(() => {
-        getUsers()
-    }, [getUsers]);
+        if (accountId) getUsers();
+    }, [getUsers,accountId,realtimeEpoch]);
+
+    useEffect(() => subscribeToConversations(socket), [socket,subscribeToConversations]);
 
     const handleInvite = (e) => {
         e.preventDefault();
@@ -32,7 +35,7 @@ const Sidebar = () => {
         setInviteEmail("");
     };
 
-    if (isUserLoading) return <SidebarSkeleton />
+    if (isUsersLoading) return <SidebarSkeleton />
 
     return (
         <aside className="h-full w-20 lg:w-72 border-r border-base-300 flex flex-col transition-all duration-200">

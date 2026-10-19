@@ -1,15 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useChatStore } from "../src/store/useChatStore.js";
 
-const { api, socket, toast } = vi.hoisted(() => ({
+const { api, socket, toast, authState } = vi.hoisted(() => ({
     api: { get: vi.fn(), post: vi.fn() },
     socket: { on: vi.fn(), off: vi.fn(), timeout: vi.fn(), emit: vi.fn() },
     toast: { error: vi.fn(), success: vi.fn() },
+    authState: {},
 }));
 
 vi.mock("../src/lib/axios.js", () => ({ axiosInstance: api }));
 vi.mock("../src/store/useAuthStore.js", () => ({
-    useAuthStore: { getState: () => ({ socket }) },
+    useAuthStore: { getState: () => authState, subscribe: vi.fn() },
 }));
 vi.mock("react-hot-toast", () => ({ toast }));
 
@@ -36,7 +37,10 @@ const listen = () => {
 };
 
 beforeEach(() => {
+    state().unsubscribeFromMessages();
     vi.clearAllMocks();
+    authState.socket = socket;
+    authState.authUser = { _id: "alice" };
     socket.timeout.mockReturnValue(socket);
     socket.emit.mockImplementation((_event, _id, ack) => ack(null, { ok: true }));
     useChatStore.setState(useChatStore.getInitialState(), true);
@@ -103,6 +107,59 @@ describe("chat message concurrency", () => {
         await first;
         expect(state().messages).toEqual([message(2)]);
         expect(socket.emit).toHaveBeenCalledTimes(1);
+    });
+
+    it("subscribes before reading catch-up history and preserves messages arriving during the read", async () => {
+        const receive = listen();
+        let acknowledge;
+        socket.emit.mockImplementationOnce((_event, _id, callback) => { acknowledge = callback; });
+        const response = deferred();
+        api.get.mockReturnValueOnce(response.promise);
+        const pending = state().getMessages(chatA._id, { ensureJoined: true });
+        expect(api.get).not.toHaveBeenCalled();
+        acknowledge(null, { ok: true });
+        await Promise.resolve();
+        expect(api.get).toHaveBeenCalledWith(`app/messages/${chatA._id}`);
+        receive(message(2));
+        response.resolve(page([message(1)]));
+        await pending;
+        expect(state().messages).toEqual([message(1), message(2)]);
+    });
+
+    it("cleans up only its own message handler on the captured socket", () => {
+        const cleanup = state().subscribeToMessages();
+        const handler = socket.on.mock.calls.find(([event]) => event === "newMessage")[1];
+        const newer = { off: vi.fn() };
+        authState.socket = newer;
+        cleanup();
+        expect(socket.off).toHaveBeenCalledWith("newMessage", handler);
+        expect(newer.off).not.toHaveBeenCalled();
+    });
+
+    it("refreshes on a conversation announcement and removes exactly that listener", async () => {
+        const response = deferred();
+        api.get.mockReturnValueOnce(response.promise);
+        const cleanup = state().subscribeToConversations();
+        const handler = socket.on.mock.calls.find(([event]) => event === "conversation:new")[1];
+        handler({ conversationId: "new" });
+        expect(api.get).toHaveBeenCalledWith("app/messages/users");
+        response.resolve({ data: [{ _id: "new" }] });
+        await response.promise;
+        expect(state().users).toEqual([{ _id: "new" }]);
+        cleanup();
+        expect(socket.off).toHaveBeenCalledWith("conversation:new", handler);
+    });
+
+    it("rejects superseded sidebar responses", async () => {
+        const older = deferred(), newer = deferred();
+        api.get.mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+        const first = state().getUsers();
+        const second = state().getUsers();
+        newer.resolve({ data: [{ _id: "new" }] });
+        await second;
+        older.resolve({ data: [{ _id: "old" }] });
+        await first;
+        expect(state().users).toEqual([{ _id: "new" }]);
     });
 });
 

@@ -3,7 +3,7 @@
 **Goal:** move delivery onto namespaced `user:<id>` and `conversation:<id>` rooms, join a user's
 *entire* room set on connect (no lazy joining), replace the full-array online broadcast with
 **delta presence** that is correct across multiple tabs, and isolate all presence logic into one
-module that can later be lifted behind MyCache pub/sub.
+module that provides a boundary for a later distributed presence design.
 
 ---
 
@@ -16,16 +16,22 @@ module that can later be lifted behind MyCache pub/sub.
 | WS2 delta presence with multi-tab support | ✅ done — snapshot/join/leave, `getOnlineUsers` retired |
 | WS3 conversation lifecycle auto-join (invite/group) | ✅ done — `joinUsersToConversation` |
 | WS4 frontend delta listeners + socket lifecycle fixes | ✅ done — `useAuthStore.js` |
-| WS5 tests (backend presence suite + frontend reducer tests) | ✅ done — 70 backend + 18 frontend green |
+| WS5 tests (backend presence/lifecycle + frontend store regressions) | ✅ reviewed — expanded regression coverage; results recorded below |
 
-**Result:** the gate is met (and exceeded). Pre-Phase-2 backend baseline was **63** tests
-(`validation` 28, `pagination` 9, `idor.socket` 10 grew in commit `147454d`, which landed after
-this plan was written); **+7** new `presence.test.js` cases → **70** backend tests. Frontend:
-11 existing `chat-store.test.js` + **7** new `presence.test.js` = **18**. `npm run build` passes.
+**Review fixes:** readiness is now explicit and emitted after room discovery; a disconnected
+socket cannot become online when a pending query resolves. New conversations notify every
+participant tab and refresh the sidebar. Reconnects refresh the selected chat from REST after
+an authorized join acknowledgement. Account changes clear chat data and invalidate stale
+requests/events. Group minimums count unique participants, and index creation is additive.
 
-**Manual follow-up (not blocking):** run `node scripts/migrate-phase2.js` once a `MONGO_URL` is
+The original implementation had 70 backend and 18 frontend tests. The review adds lifecycle,
+creation-race, index-preservation, reconnect/catch-up and account-isolation regressions.
+Final verification results are recorded at the end of this document.
+
+**Deployment follow-up:** run `node scripts/migrate-phase2.js` once a `MONGO_URL` is
 reachable, so the `{ participants: 1 }` index exists before the connect-time query takes traffic.
-(Phase 1's `migrate-phase1.js` still runs independently.) Hosted CI runs on the next push.
+(Phase 1's `migrate-phase1.js` still runs independently.) Verify both migrations and the
+two-browser smoke checks in the deployment environment. Hosted CI runs on push.
 
 ---
 
@@ -65,6 +71,8 @@ Room names live in one place: `src/lib/rooms.js` → `userRoom(id)`, `conversati
 | S→C | `presence:snapshot` | `string[]` online userIds | sent **once, to the connecting socket only** (includes itself) |
 | S→C | `presence:join` | `{ userId }` | broadcast only when the user goes 0→1 tabs |
 | S→C | `presence:leave` | `{ userId }` | broadcast only when the user goes 1→0 tabs |
+| S→C | `realtime:ready` | `{ roomsReady }` | application readiness after snapshot; false reports degraded room discovery |
+| S→C | `conversation:new` | `{ conversationId }` | invalidates each participant's sidebar, across all tabs |
 | S→C | `newMessage` | message doc | to `conversation:<id>` only |
 | ~~S→C~~ | ~~`getOnlineUsers`~~ | | **retired** (breaking wire change → ship server+client together) |
 | C→S | `join_room` | convId, ack | kept as an idempotent **ensure** (heals a failed auto-join) |
@@ -77,7 +85,7 @@ Tests must stay green after this workstream.
 
 - **New `src/lib/presence.js`** — the only owner of `Map<userId, Set<socketId>>`:
   ```js
-  export function onConnect(io, socket)   // join user room, track, return { firstTab }
+  export function onConnect(io, socket)   // track after initialization, snapshot/delta, return { firstTab }
   export function onDisconnect(io, socket)// untrack, return { lastTab }
   export function isOnline(userId)
   export function getOnlineUserIds()
@@ -85,9 +93,9 @@ Tests must stay green after this workstream.
   export function reset()                 // tests only
   ```
   - `onConnect`/`onDisconnect` take `io` as an argument (never import a singleton) — this is the
-    seam that lets a later phase swap `io.emit` for MyCache pub/sub without touching callers.
-  - Today's connect/disconnect `console.log` moves in here (gate behind `NODE_ENV !== "test"`).
-  - No imports beyond `rooms.js` → the module can be moved verbatim.
+    seam for future work; distributed transitions and crash cleanup still require explicit design.
+  - Routine connect/disconnect logs are removed; initialization failures retain error logs.
+  - Room management stays in `socket.js`; the presence module owns only its registry and emissions.
 - **`src/lib/socket.js`** shrinks to: CORS + JWT middleware, `presence.onConnect/onDisconnect`
   delegation, conversation-room joining, and the `join_room` handler. Existing
   `getIO()`/`closeSocket()` exports stay.
@@ -101,16 +109,20 @@ Tests must stay green after this workstream.
 - **`src/lib/rooms.js` (new):** `userRoom(userId)`, `conversationRoom(convId)` (lowercases, same
   normalization `join_room` does today).
 - **Connect sequence** (in `socket.js` connection handler):
-  1. `presence.onConnect(io, socket)` → joins `user:<id>`, tracks, `{ firstTab }`.
-  2. One DB query: `Conversation.find({ participants: userId }).select("_id").lean()`.
-  3. Single `socket.join(ids.map(conversationRoom))` call for the whole array.
-  4. DB failure → log and continue; the connection stays alive and the client-side `join_room`
-     ensure (WS4) heals it.
+  1. Register disconnect and authorized `join_room` handlers before the first await.
+  2. Await the authenticated user-room join, then query the user's conversation IDs. This order
+     covers conversations created concurrently with discovery through the already-joined user room.
+  3. Check connectivity after awaits; bulk-join the conversation rooms, then track presence
+     and emit its snapshot followed by `realtime:ready { roomsReady: true }`.
+  4. Discovery failure → log, keep the connected socket usable and emit readiness with
+     `roomsReady: false`. The selected-chat join fallback helps that room; it does not imply
+     every room recovered. Initialization has an explicit rejection boundary.
 - **`message.controller.js:167`:** `getIO()?.to(conversationRoom(conversation._id)).emit("newMessage", …)`.
 - **`join_room` handler:** unchanged logic (membership check + ack) but joins `conversationRoom(id)`.
 - **Index:** `conversation.model.js` gets `{ participants: 1 }` (this query now runs on *every*
   connect, plus `getUsersforSidebar` and `conversationAccess` already use it). Add
-  `Conversation.syncIndexes()` to the migration script or a one-off `migrate-phase2.js`.
+  additive `Conversation.createIndexes()` in `migrate-phase2.js`. Do not use `syncIndexes()`:
+  it can remove operator-created indexes absent from the schema. The migration has a regression test.
 - **Test updates in the same workstream (keeps the suite green per step):**
   - `idor.socket.test.js` adapter assertions → `conversation:${convAC._id}`
   - delivery probe `.to(convAC._id)` → `.to(conversationRoom(convAC._id))`
@@ -136,7 +148,8 @@ if (lastTab) socket.broadcast.emit("presence:leave", { userId });
   full-list broadcast, and existing tabs never see a redundant event.
 - Snapshot and deltas can interleave (a `presence:join` may arrive before/after a snapshot that
   already contains that id) → the reducer in WS4 must be idempotent **by design**, not by luck.
-- Emission stays inside `presence.js` so the future broker swap is a one-file change.
+- Emission stays inside `presence.js`. Multiple instances will also need atomic shared
+  presence transitions, crash/TTL cleanup, a compatible room adapter and shared rate limits.
 
 ## WS3 — Conversation lifecycle: auto-join created rooms
 
@@ -152,9 +165,15 @@ run *outside* any socket handler:
   ```js
   const ioRef = getIO(); if (!ioRef) return;   // REST-only test apps: no-op
   ioRef.in(participantIds.map(userRoom)).socketsJoin(conversationRoom(convId));
+  ioRef.to(participantIds.map(userRoom)).emit("conversation:new", { conversationId: String(convId) });
   ```
   Connected participants join instantly (both sides of a fresh invite, mid-group-create); offline
   participants join on their next connect via WS1's query.
+- Notifications use unique participant rooms and the saved conversation. Failures after
+  persistence are logged without converting a successful create into an HTTP 500. Group
+  membership is deduplicated before enforcing its three-person minimum.
+- Sidebar listeners refetch the existing formatted `/users` response on the event and on
+  readiness/reconnect; overlapping requests and old account responses cannot overwrite it.
 - No participant-removal path exists today. If one is added later it must call `socketsLeave` —
   note this in a comment.
 
@@ -174,16 +193,23 @@ run *outside* any socket handler:
 - **Lifecycle fixes (real bugs today):**
   - guard becomes `if (!authUser || get().socket) return;` — currently a *disconnected* socket
     passes `socket?.connected === false` and spawns a second instance with duplicated listeners.
-  - `disconnectSocket`: `socket.removeAllListeners(); socket.disconnect(); set({ socket: null, onlineUsers: [] })`
-    so a logout/login as a different user can't inherit listeners or stale presence.
-- **Reconnect needs no client code:** Socket.IO re-runs the server `connection` handler, so the
-  full room set + a fresh snapshot are re-established automatically — this fixes today's
-  "reconnect leaves me in no rooms" bug.
+  - Use `autoConnect: false`; register listeners and store the socket before connecting.
+  - Disconnect/error clears presence and readiness. Teardown removes exact owned handlers,
+    disconnects even a pending connection, and clears the socket reference.
+  - Socket/account generations reject obsolete callbacks and pending auth responses.
+- **Reconnect restores rooms and also requires client catch-up:** the server repeats discovery;
+  each readiness event advances a frontend connection epoch, refreshing the sidebar and
+  selected conversation. A join acknowledgement precedes the catch-up read, so new live
+  messages merge with the REST response. A latest page does not replay unlimited missed history;
+  older persisted messages remain available through composite-cursor pagination.
 
 **`useChatStore.js`:**
 - Keep the `join_room` emit in `getMessages` as an idempotent ensure (ack + toast unchanged).
   It is now redundant in the happy path but heals a failed WS1 auto-join and keeps the
   membership-enforcement tests meaningful.
+- Component subscriptions depend on the actual socket; cleanup captures that exact instance
+  and listener. Account changes clear selected chat, messages and sidebar and invalidate pending
+  requests. Sidebar loading uses the store's actual `isUsersLoading` property.
 - `subscribeToMessages` already filters by `newMessage.conversationId === selectedUser._id`,
   which is now the *only* thing standing between you and every chat's traffic — keep it.
 - **Optional stretch (flagged, not required):** since the socket now receives all conversations'
@@ -230,16 +256,15 @@ snapshot replaces state; duplicate `presence:join` is idempotent; `presence:leav
 
 ## Decisions (defaults, overridable)
 
-- **Room prefixes** `conversation:` / `user:` — a breaking wire change, but server and client ship
-  from one repo/deploy, so there is no compatibility window.
+- **Room prefixes** `conversation:` / `user:` are centralized. The presence-event change
+  requires matching server/client versions and a refresh of existing browser tabs.
 - **Presence protocol:** `presence:snapshot` (unicast) + `presence:join`/`presence:leave` with a
   `{ userId }` object payload (extensible later for typing/last-seen) — `getOnlineUsers` retired.
 - **Frontend keeps `onlineUsers: []`** — zero component churn; handlers enforce Set semantics.
 - **`join_room` kept**, not deleted: it becomes an idempotent ensure rather than the primary
   mechanism.
-- **Presence stays process-local** (single Render instance, as today). Deltas broadcast only to
-  locally-connected sockets; the `io`-argument API in `presence.js` is the designated seam for
-  MyCache pub/sub in a later phase — no other file changes when that happens.
+- **Presence stays process-local** (single Render instance). The module boundary helps a future
+  broker integration, but distributed room readiness and shared stores require more work.
 - **Multi-tab truth = server-side socket refcount**; no client-side tab coordination.
 - **Out of scope:** typing indicators, read receipts, presence heartbeat/TTL, delivery guarantees
   (at-least-once acks), sidebar unread previews (stretch only).
@@ -251,6 +276,21 @@ snapshot replaces state; duplicate `presence:join` is idempotent; `presence:leav
 - **Heavy accounts** joining thousands of rooms on connect: one query + one bulk `socket.join`;
   if a user ever has an absurd conversation count, cap/ paginate — not a concern at current scale.
 - **Presence registry leaks** if a socket is neither connected nor disconnected cleanly —
-  `presence.reset()` in test teardown, and Socket.IO's own disconnect guarantees cover prod.
+  disconnect handlers are registered before awaits, pending discovery checks connectivity,
+  and teardown verifies empty presence before resetting it.
 - Two sources of truth during rollout (old clients listening for `getOnlineUsers`) — acceptable
-  because deploy is atomic; do **not** emit both events long-term.
+  only with an explicit client refresh requirement. Existing browser code is not replaced by
+  a server deployment or transport reconnect; do **not** emit both events long-term.
+
+## Review verification (2026-10-19)
+
+- Backend: **78 tests across 8 suites passed**, using a unique temporary MongoDB database.
+- Frontend: **29 tests across 2 suites passed**, including subscription ordering, sidebar
+  races, account cleanup, stale callbacks and reconnect/readiness behavior. Local tests used
+  the working backend Vitest 3.2.7 runtime to avoid OneDrive dependency read errors.
+- Frontend production build passed. Existing CI runs both standard test commands and build
+  on push; check its result for the published commit.
+- The migration preservation test runs the real Phase 2 script against the temporary database
+  and confirms that operator-created indexes survive. No development/production database was migrated.
+- Browser smoke checks and deployment migration/index verification remain follow-up work;
+  automated checks do not establish those rollout steps as complete.

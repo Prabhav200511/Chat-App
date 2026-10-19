@@ -11,7 +11,8 @@ import Conversation from "../src/models/conversation.model.js";
  * connect (to auto-join all of the user's rooms), so the `{ participants: 1 }`
  * index must exist before the new server code takes traffic.
  *
- * Idempotent — syncIndexes() only creates missing indexes; safe to re-run.
+ * Additive and idempotent: createIndexes() creates declared indexes without
+ * dropping existing indexes that may have been added by an operator.
  *
  *   node scripts/migrate-phase2.js
  */
@@ -20,19 +21,15 @@ const run = async () => {
         throw new Error("MONGO_URL is not set");
     }
     await mongoose.connect(process.env.MONGO_URL);
-    console.log("Connected. Syncing Phase 2 indexes...");
+    console.log("Connected. Creating Phase 2 indexes...");
 
     const before = await Conversation.collection.indexes().catch(() => []);
-    const changed = await Conversation.syncIndexes();
+    await Conversation.createIndexes();
+    const after = await Conversation.collection.indexes();
 
     console.log(`Conversation indexes before: ${before.map((i) => i.name).join(", ") || "(none)"}`);
     console.log(
-        `Conversation indexes removed by sync: ${changed.length ? changed.join(", ") : "(none)"}`
-    );
-    console.log(
-        `Conversation indexes now: ${Object.keys(Conversation.schema.indexes().reduce((acc, [keys]) => ({ ...acc, [JSON.stringify(keys)]: 1 }), {}))
-            .concat(["_id_"])
-            .join(", ")}`
+        `Conversation indexes now: ${after.map((i) => i.name).join(", ")}`
     );
 
     await mongoose.disconnect();
