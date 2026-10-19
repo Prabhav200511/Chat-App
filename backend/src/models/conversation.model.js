@@ -10,8 +10,10 @@ const conversationSchema = mongoose.Schema({
             function (val) { return val.length >= 2; },
             'A conversation must have at least two participants'
         ]
-    },
-    messages: [{ type: mongoose.Schema.Types.ObjectId, ref: "Message", default: [] }]
+    }
+    // NOTE: the legacy messages[] array is gone — messages live on
+    // Message.conversationId (indexed) and are paginated from there.
+    // See scripts/migrate-phase1.js for the one-time backfill.
 }, { timestamps: true })
 
 export default mongoose.model("Conversation", conversationSchema);

@@ -1,44 +1,20 @@
 import dotenv from "dotenv";
 dotenv.config();
 
-import cookieParser from "cookie-parser"
-import express from "express";
-import authRoutes from "./routes/auth.routes.js"
-import {connectDB} from "./lib/db.js"
-import messageRoutes from "./routes/message.routes.js";
-import cors from "cors";
-import { app, server } from "./lib/socket.js";
-import path from "path";
+import http from "http";
+import { createApp } from "./app.js";
+import { initSocket } from "./lib/socket.js";
+import { connectDB } from "./lib/db.js";
 
-const __dirname = path.resolve(); 
+// Default matches the frontend's dev target (localhost:4000)
+const PORT = process.env.PORT || 4000;
 
-const PORT = process.env.PORT||5000
+const app = createApp();
+const server = http.createServer(app);
 
+initSocket(server);
 
-app.use(express.json({ limit: "5mb" }));
-app.use(express.urlencoded({ extended: true, limit: "5mb" }));
-app.use(cookieParser())
-app.use(cors({
-    origin: "http://localhost:5173",
-    credentials:true
-}
-));
-app.use("/app/auth",authRoutes);
-app.use("/app/messages",messageRoutes);
-
-if(process.env.NODE_ENV === "production") {
-    app.use(express.static(path.join(__dirname, "../frontend/dist")));
-
-    app.get("/{*any}", (req, res) => {
-        res.sendFile(path.join(__dirname, "../frontend", "dist", "index.html"));
-    });
-}
-
-
-
-server.listen(PORT,() => {
-    console.log(`app working on ${PORT}`)
+server.listen(PORT, () => {
+    console.log(`app working on ${PORT}`);
     connectDB();
-})
-
-
+});

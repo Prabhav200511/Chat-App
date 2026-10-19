@@ -7,7 +7,7 @@
   "license": "AGPL-version-3.0",
   "private": false,
   "engines": {
-    "node": ">= 14.0.0",
+    "node": ">= 20.0.0",
     "npm": ">= 6.0.0"
   },
   "homepage": "",
@@ -25,22 +25,30 @@
   "contributors": [],
   "scripts": {
     "dev": "nodemon src/index.js",
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "test": "vitest run"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
     "bcryptjs": "^3.0.2",
     "chat-app": "file:..",
     "cloudinary": "^2.6.1",
+    "cookie": "^1.0.2",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
+    "express-rate-limit": "^7.5.0",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.15.1",
-    "socket.io": "^4.8.1"
+    "socket.io": "^4.8.1",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
-    "nodemon": "^3.1.10"
+    "artillery": "^2.0.33",
+    "nodemon": "^3.1.10",
+    "socket.io-client": "^4.8.1",
+    "supertest": "^7.1.0",
+    "vitest": "^3.2.4"
   }
 }

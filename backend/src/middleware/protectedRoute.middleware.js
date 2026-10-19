@@ -14,7 +14,7 @@ export const protectedRoute = async (req,res,next) => {
         const checkToken = jwt.verify(token,process.env.JWT_SECRET);
 
         if(!checkToken){
-            res.status(401).json({
+            return res.status(401).json({
                 message:"Invalid Token"
             })
         }
@@ -32,6 +32,16 @@ export const protectedRoute = async (req,res,next) => {
         next();
 
     } catch (error) {
+        // A bad/expired/forged token is a client problem, not a server error —
+        // and must not fall through as a 500 (or worse, keep processing).
+        if (
+            error instanceof jwt.JsonWebTokenError ||
+            error instanceof jwt.TokenExpiredError
+        ) {
+            return res.status(401).json({
+                message:"Invalid or expired token"
+            });
+        }
         console.error(error);
         return res.status(500).json({
             message:"Internal server error"

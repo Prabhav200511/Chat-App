@@ -2,9 +2,12 @@ import cloudinary from "../lib/cloudinary.js";
 import User from "../models/user.model.js";
 import Message from "../models/message.model.js";
 import Conversation from "../models/conversation.model.js";
-import { io } from "../lib/socket.js";
+import { getIO } from "../lib/socket.js";
+import {
+    getAuthorizedConversation,
+    respondNotFound,
+} from "../lib/conversationAccess.js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
-
 
 export const inviteUserByEmail = async (req, res) => {
     try {
@@ -21,7 +24,8 @@ export const inviteUserByEmail = async (req, res) => {
         }
 
         let conversation = await Conversation.findOne({
-            participants: { $all: [myId, targetUser._id] }
+            participants: { $all: [myId, targetUser._id] },
+            isGroup: false,
         });
 
         if (conversation) {
@@ -30,11 +34,11 @@ export const inviteUserByEmail = async (req, res) => {
 
         conversation = await Conversation.create({
             participants: [myId, targetUser._id],
-            messages: []
         });
 
         res.status(201).json({ message: "Invite successful", conversation });
     } catch (error) {
+        console.error("Error inviting user:", error);
         res.status(500).json({ message: "Internal server error" });
     }
 };
@@ -42,73 +46,96 @@ export const inviteUserByEmail = async (req, res) => {
 export const getUsersforSidebar = async (req, res) => {
     try {
         const loggedInUserId = req.user._id;
-        
+
         const conversations = await Conversation.find({
-            participants: loggedInUserId
+            participants: loggedInUserId,
         }).populate("participants", "-password");
 
-        const formattedChats = conversations.map(conv => {
-            if (conv.isGroup) {
+        // Sidebar entries are keyed by CONVERSATION id in both cases, so the
+        // frontend can route getMessages/sendMessage without guessing whether
+        // it holds a user id or a conversation id.
+        const formattedChats = conversations
+            .map((conv) => {
+                const participants = conv.participants.filter(Boolean);
+
+                if (conv.isGroup) {
+                    return {
+                        _id: conv._id,
+                        fullName: conv.groupName,
+                        profilePic: "/avatar.png",
+                        isGroup: true,
+                        participants,
+                    };
+                }
+
+                const otherUser = participants.find(
+                    (p) => p._id.toString() !== loggedInUserId.toString()
+                );
+                if (!otherUser) return null;
+
                 return {
                     _id: conv._id,
-                    fullName: conv.groupName,
-                    profilePic: "/avatar.png", // Or a group icon if you have one
-                    isGroup: true,
-                    isConversationId: true,
-                    participants: conv.participants // <--- ADD THIS LINE
-                };
-            } else {
-                const otherUser = conv.participants.find(p => p._id.toString() !== loggedInUserId.toString());
-                return {
-                    _id: otherUser._id,
                     fullName: otherUser.fullName,
                     profilePic: otherUser.profilePic,
-                    isGroup: false
+                    isGroup: false,
+                    otherUser,
                 };
-            }
-        }).filter(Boolean);
+            })
+            .filter(Boolean);
 
         res.status(200).json(formattedChats);
     } catch (error) {
         console.error("Error formatting sidebar:", error);
         res.status(500).json({ message: "Internal Server Error" });
     }
-}
+};
 
 export const getMessages = async (req, res) => {
     try {
-        const { id: chatOrUserId } = req.params;
+        const { id: conversationId } = req.params;
         const myId = req.user._id;
 
-        // 1. Try to find by Conversation ID (This handles Groups!)
-        let conversation = await Conversation.findById(chatOrUserId).populate("messages");
+        // Membership gate: unknown id and foreign id are indistinguishable
+        // to the caller (both 404) — no existence oracle.
+        const conversation = await getAuthorizedConversation(conversationId, myId);
+        if (!conversation) return respondNotFound(res);
 
-        // 2. If not found, it must be a 1-on-1 chat, so search by participant IDs
-        if (!conversation) {
-            conversation = await Conversation.findOne({
-                isGroup: false,
-                participants: { $all: [myId, chatOrUserId] }
-            }).populate("messages");
+        const { limit = 30, before } = req.validated?.query ?? {};
+
+        const query = { conversationId: conversation._id };
+        if (before) {
+            query.createdAt = { $lt: new Date(before) };
         }
 
-        if (!conversation) {
-            return res.status(200).json({ conversationId: null, messages: [] });
-        }
+        // Fetch one extra row to detect whether an older page exists.
+        const rows = await Message.find(query)
+            .sort({ createdAt: -1 })
+            .limit(limit + 1)
+            .lean();
 
-        return res.status(200).json({ 
-            conversationId: conversation._id, 
-            messages: conversation.messages 
+        const hasMore = rows.length > limit;
+        const messages = rows.slice(0, limit).reverse();
+
+        return res.status(200).json({
+            conversationId: conversation._id,
+            messages,
+            hasMore,
         });
     } catch (error) {
+        console.error("Error in getMessages:", error);
         res.status(500).json({ message: "Internal server error" });
     }
-}
+};
 
 export const sendMessage = async (req, res) => {
     try {
         const { text, image } = req.body;
-        const { id: chatOrUserId } = req.params;
+        const { id: conversationId } = req.params;
         const senderId = req.user._id;
+
+        // Authorize BEFORE spending a Cloudinary upload.
+        const conversation = await getAuthorizedConversation(conversationId, senderId);
+        if (!conversation) return respondNotFound(res);
 
         let imageUrl;
         if (image) {
@@ -116,72 +143,52 @@ export const sendMessage = async (req, res) => {
             imageUrl = uploadImage.secure_url;
         }
 
-        // We use chatOrUserId as receiverId for compatibility with your Message model
-        const newMessage = new Message({
-            receiverId: chatOrUserId, 
-            senderId: senderId,
-            text: text,
+        const newMessage = await Message.create({
+            conversationId: conversation._id,
+            senderId,
+            text,
             image: imageUrl,
         });
 
-        await newMessage.save();
-
-        // 1. Try to find by Conversation ID
-        let conversation = await Conversation.findById(chatOrUserId);
-
-        // 2. If not found, search by participant IDs
-        if (!conversation) {
-            conversation = await Conversation.findOne({
-                isGroup: false,
-                participants: { $all: [senderId, chatOrUserId] }
-            });
-        }
-
-        if (conversation) {
-            conversation.messages.push(newMessage._id);
-            await conversation.save();
-            io.to(conversation._id.toString()).emit("newMessage", newMessage);
-        }
+        getIO()?.to(conversation._id.toString()).emit("newMessage", newMessage);
 
         return res.status(201).json(newMessage);
     } catch (error) {
+        console.error("Error in sendMessage:", error);
         res.status(500).json({ message: "Internal server error" });
     }
-}
+};
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 export const getSmartReplies = async (req, res) => {
     try {
-        const { id: chatOrUserId } = req.params;
+        const { id: conversationId } = req.params;
         const myId = req.user._id;
 
-        // 1. Try to find by Conversation ID (This handles Groups!)
-        let conversation = await Conversation.findById(chatOrUserId).populate({
-            path: "messages",
-            options: { sort: { createdAt: -1 }, limit: 5 } // Fetch newest first
-        });
+        // 404 before any Gemini call — an unauthorized caller must never
+        // cost us an LLM request.
+        const conversation = await getAuthorizedConversation(conversationId, myId);
+        if (!conversation) return respondNotFound(res);
 
-        // 2. If not found, it must be a 1-on-1 chat, so search by participant IDs
-        if (!conversation) {
-            conversation = await Conversation.findOne({
-                isGroup: false,
-                participants: { $all: [myId, chatOrUserId] }
-            }).populate({
-                path: "messages",
-                options: { sort: { createdAt: -1 }, limit: 5 }
-            });
-        }
+        const recent = await Message.find({ conversationId: conversation._id })
+            .sort({ createdAt: -1 })
+            .limit(5)
+            .lean();
 
-        if (!conversation || conversation.messages.length === 0) {
+        if (recent.length === 0) {
             return res.status(200).json([]);
         }
 
         // Format chat history (Gemini can handle multiple speakers)
-        const chatHistory = conversation.messages.reverse().map(msg => {
-            const sender = msg.senderId.toString() === myId.toString() ? "Me" : "Someone else";
-            return `${sender}: ${msg.text || "[Image attachment]"}`;
-        }).join("\n");
+        const chatHistory = recent
+            .reverse()
+            .map((msg) => {
+                const sender =
+                    msg.senderId.toString() === myId.toString() ? "Me" : "Someone else";
+                return `${sender}: ${msg.text || "[Image attachment]"}`;
+            })
+            .join("\n");
 
         const prompt = `You are a helpful AI generating smart, quick replies for a chat application.
         Read the recent chat history below:
@@ -192,30 +199,31 @@ export const getSmartReplies = async (req, res) => {
         Format the output strictly as a valid JSON array of strings. Do not include markdown code blocks, labels, or any other text.
         Example: ["Sounds good!", "What time?", "I'll check on that."]`;
 
-        const model = genAI.getGenerativeModel({ model: "gemini-3.5-flash" }); // Or whatever model you settled on
+        const model = genAI.getGenerativeModel({ model: "gemini-3.5-flash" });
         const result = await model.generateContent(prompt);
         const responseText = result.response.text();
 
         let replies = [];
         try {
-            const cleanedText = responseText.replace(/```json/g, "").replace(/```/g, "").trim();
+            const cleanedText = responseText
+                .replace(/```json/g, "")
+                .replace(/```/g, "")
+                .trim();
             replies = JSON.parse(cleanedText);
         } catch (parseError) {
             console.error("Failed to parse Gemini response:", responseText);
         }
 
         return res.status(200).json(replies);
-
     } catch (error) {
         console.error("Error generating smart replies:", error);
         res.status(500).json({ message: "Internal server error" });
     }
 };
 
-
 export const createGroupChat = async (req, res) => {
     try {
-        const { groupName, emails } = req.body; // e.g., emails: ["friend1@a.com", "friend2@a.com"]
+        const { groupName, emails } = req.body;
         const myId = req.user._id;
 
         if (!groupName || !emails || emails.length === 0) {
@@ -224,9 +232,9 @@ export const createGroupChat = async (req, res) => {
 
         // 1. Find all users matching the provided emails
         const usersToAdd = await User.find({ email: { $in: emails } });
-        
+
         // 2. Extract their IDs and add the creator's ID
-        const participantIds = usersToAdd.map(user => user._id);
+        const participantIds = usersToAdd.map((user) => user._id);
         participantIds.push(myId);
 
         if (participantIds.length < 3) {
@@ -238,7 +246,6 @@ export const createGroupChat = async (req, res) => {
             isGroup: true,
             groupName: groupName,
             participants: participantIds,
-            messages: []
         });
 
         res.status(201).json({ message: "Group created successfully", conversation: groupConversation });

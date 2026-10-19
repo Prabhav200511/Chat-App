@@ -14,7 +14,12 @@ const Sidebar = () => {
 
     const { onlineUsers } = useAuthStore();
 
-    const filteredUsers = showOnlineOnly ? users.filter(user => onlineUsers.includes(user._id)) : users;
+    // Sidebar entries are keyed by conversation id; presence comes from the
+    // other participant (groups are never "online").
+    const isOnline = (chat) =>
+        !chat.isGroup && chat.otherUser && onlineUsers.includes(chat.otherUser._id);
+
+    const filteredUsers = showOnlineOnly ? users.filter(isOnline) : users;
 
     useEffect(() => {
         getUsers()
@@ -107,7 +112,7 @@ const Sidebar = () => {
                         />
                         <span className="text-sm">Show online only</span>
                     </label>
-                    <span className="text-xs text-zinc-500">({onlineUsers.length - 1} online)</span>
+                    <span className="text-xs text-zinc-500">({users.filter(isOnline).length} online)</span>
                 </div>
             </div>
 
@@ -125,10 +130,10 @@ const Sidebar = () => {
                         <div className="relative mx-auto lg:mx-0">
                             <img
                                 src={user.profilePic || "/avatar.png"}
-                                alt={user.name}
+                                alt={user.fullName}
                                 className="size-12 object-cover rounded-full"
                             />
-                            {onlineUsers.includes(user._id) && (
+                            {isOnline(user) && (
                                 <span
                                     className="absolute bottom-0 right-0 size-3 bg-green-500 
                                     rounded-full ring-2 ring-zinc-900"
@@ -139,7 +144,11 @@ const Sidebar = () => {
                         <div className="hidden lg:block text-left min-w-0">
                             <div className="font-medium truncate">{user.fullName}</div>
                             <div className="text-sm text-zinc-400">
-                                {onlineUsers.includes(user._id) ? "Online" : "Offline"}
+                                {user.isGroup
+                                    ? "Group"
+                                    : isOnline(user)
+                                      ? "Online"
+                                      : "Offline"}
                             </div>
                         </div>
                     </button>

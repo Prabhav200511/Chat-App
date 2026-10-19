@@ -9,7 +9,7 @@ import { useRef } from 'react';
 
 const ChatContainer = () => {
 
-    const {messages,getMessages,isMessagesLoading,selectedUser,subscribeToMessages,unsubscribeFromMessages,getSmartReplies} = useChatStore();
+    const {messages,getMessages,isMessagesLoading,selectedUser,subscribeToMessages,unsubscribeFromMessages,getSmartReplies,hasMore,loadOlderMessages} = useChatStore();
     const {authUser} = useAuthStore();
     const messageEndRef = useRef(null);
 
@@ -21,11 +21,14 @@ const ChatContainer = () => {
         return () => unsubscribeFromMessages();
     },[selectedUser._id,getMessages,subscribeToMessages,unsubscribeFromMessages]);
 
+    // Scroll to the newest message when the tail changes — not when older
+    // messages are prepended, which would yank the viewport down.
+    const lastMessageId = messages?.[messages.length - 1]?._id;
     useEffect(() => {
-      if(messages && messageEndRef.current){
+      if(lastMessageId && messageEndRef.current){
         messageEndRef.current.scrollIntoView({behavior: "smooth"});
       }
-    },[messages]);
+    },[lastMessageId]);
 
     if(isMessagesLoading){
          return (
@@ -41,11 +44,20 @@ const ChatContainer = () => {
       <ChatHeader />
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {hasMore && (
+          <div className="flex justify-center">
+            <button
+              className="btn btn-xs btn-ghost"
+              onClick={loadOlderMessages}
+            >
+              Load earlier messages
+            </button>
+          </div>
+        )}
         {messages.map((message) => (
           <div
             key={message._id}
             className={`chat ${message.senderId === authUser._id ? "chat-end" : "chat-start"}`}
-            ref = {messageEndRef}
           >
             <div className=" chat-image avatar">
               <div className="size-10 rounded-full border">
@@ -76,6 +88,9 @@ const ChatContainer = () => {
             </div>
           </div>
         ))}
+        {/* Scroll sentinel: only the LAST ref assignment wins in the map above,
+            so an explicit node keeps the anchor unambiguous. */}
+        <div ref={messageEndRef} />
       </div>
 
       <MessageInput />

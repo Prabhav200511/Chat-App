@@ -97,10 +97,9 @@ export const useAuthStore = create((set , get) => ({
         const {authUser} = get();
         if(!authUser||get().socket?.connected) return;
 
+        // Identity comes from the httpOnly JWT cookie, never from a query param.
         const socket = io(HOME_URL, {
-            query:{
-                userId:authUser._id,
-            },
+            withCredentials: true,
         }
         );
         socket.connect();
