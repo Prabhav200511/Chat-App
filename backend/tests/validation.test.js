@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeAll, vi } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, vi } from "vitest";
 import request from "supertest";
+import cloudinary from "../src/lib/cloudinary.js";
 import {
     app,
     signup,
@@ -8,6 +9,10 @@ import {
     sendMessage,
     TEST_PASSWORD,
 } from "./helpers.js";
+
+vi.mock("../src/lib/cloudinary.js", () => ({
+    default: { uploader: { upload: vi.fn(async () => ({ secure_url: "https://images.test/upload.png" })) } },
+}));
 
 vi.mock("@google/generative-ai", () => ({
     GoogleGenerativeAI: class {
@@ -23,6 +28,19 @@ vi.mock("@google/generative-ai", () => ({
 
 describe("input validation", () => {
     let alice, bob, convAB;
+    const validImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=";
+    const invalidImages = [
+        "https://example.com/image.png",
+        "/etc/passwd",
+        "not an image",
+        "data:text/plain;base64,aGVsbG8=",
+        "data:image/png;base64,",
+        "data:image/png;base64,%%%invalid%%%",
+        "data:image/png;base64,aGVsbG8",
+        "data:image/png;base64,aGVsbG9=", // noncanonical padding bits
+    ];
+
+    beforeEach(() => cloudinary.uploader.upload.mockClear());
 
     beforeAll(async () => {
         alice = await signup("Alice");
@@ -62,6 +80,40 @@ describe("input validation", () => {
             image: "data:image/png;base64," + "A".repeat(4.2 * 1024 * 1024),
         });
         expect(res.status).toBe(400);
+        expect(cloudinary.uploader.upload).not.toHaveBeenCalled();
+    });
+
+    it.each(invalidImages)("rejects an invalid message image before uploading: %s", async (image) => {
+        expect((await sendMessage(alice, convAB._id, { image })).status).toBe(400);
+        expect(cloudinary.uploader.upload).not.toHaveBeenCalled();
+    });
+
+    it.each(invalidImages)("rejects an invalid profile image before uploading: %s", async (profilePic) => {
+        const res = await request(app).put("/app/auth/update-profile")
+            .set(authed(alice.cookie)).send({ profilePic });
+        expect(res.status).toBe(400);
+        expect(cloudinary.uploader.upload).not.toHaveBeenCalled();
+    });
+
+    it("accepts a valid message image", async () => {
+        const res = await sendMessage(alice, convAB._id, { image: validImage });
+        expect(res.status).toBe(201);
+        expect(res.body.image).toBe("https://images.test/upload.png");
+        expect(cloudinary.uploader.upload).toHaveBeenCalledWith(validImage);
+    });
+
+    it("accepts a valid profile image", async () => {
+        const res = await request(app).put("/app/auth/update-profile")
+            .set(authed(alice.cookie)).send({ profilePic: validImage });
+        expect(res.status).toBe(200);
+        expect(res.body).not.toHaveProperty("password");
+        expect(cloudinary.uploader.upload).toHaveBeenCalledWith(validImage);
+    });
+
+    it("accepts the text-only payload emitted by the browser", async () => {
+        const res = await sendMessage(alice, convAB._id, { text: "no attachment", image: null });
+        expect(res.status).toBe(201);
+        expect(cloudinary.uploader.upload).not.toHaveBeenCalled();
     });
 
     it("rejects a malformed email on invite", async () => {

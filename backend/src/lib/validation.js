@@ -23,12 +23,20 @@ export const loginSchema = z.object({
     password: z.string().min(1, "Password is required").max(128),
 });
 
-export const updateProfileSchema = z.object({
-    profilePic: z
-        .string()
-        .min(1, "Profile pic is required")
-        .max(4 * 1024 * 1024, "Profile image too large"),
-});
+const MAX_IMAGE_DATA_URL = 4 * 1024 * 1024;
+
+const imageDataUrl = z.string()
+    .max(MAX_IMAGE_DATA_URL, "Image too large")
+    .refine((value) => {
+        if (value.length > MAX_IMAGE_DATA_URL) return false;
+        const match = /^data:image\/(?:png|jpeg|jpg|gif|webp|avif|bmp);base64,([A-Za-z0-9+/]+={0,2})$/.exec(value);
+        if (!match) return false;
+        const payload = match[1];
+        return payload.length % 4 === 0 &&
+            Buffer.from(payload, "base64").toString("base64") === payload;
+    }, "Expected a base64 image data URL (PNG, JPEG, GIF, WebP, AVIF or BMP)");
+
+export const updateProfileSchema = z.object({ profilePic: imageDataUrl });
 
 export const inviteSchema = z.object({ email });
 
@@ -37,12 +45,11 @@ export const groupSchema = z.object({
     emails: z.array(email).min(1, "At least one email required").max(100, "Too many recipients"),
 });
 
-const MAX_IMAGE_DATA_URL = 4 * 1024 * 1024;
-
 export const sendMessageSchema = z
     .object({
         text: z.string().max(4000, "Message too long").optional(),
-        image: z.string().max(MAX_IMAGE_DATA_URL, "Image too large").optional(),
+        // The browser sends null when composing a text-only message.
+        image: imageDataUrl.nullish().transform((value) => value ?? undefined),
     })
     // Must contain something sendable; unknown keys (e.g. a client
     // timestamp) are stripped by zod's default strip mode.
@@ -53,6 +60,10 @@ export const sendMessageSchema = z
 export const paginationSchema = z.object({
     limit: z.coerce.number().int().min(1).max(100, "Limit max is 100").default(30),
     before: z.string().datetime({ offset: true, message: "before must be an ISO datetime" }).optional(),
+    beforeId: objectId.optional(),
+}).refine((value) => !value.beforeId || value.before, {
+    path: ["before"],
+    message: "before is required with beforeId",
 });
 
 export const idParamSchema = z.object({ id: objectId });

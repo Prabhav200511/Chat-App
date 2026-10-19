@@ -9,7 +9,7 @@ import { useRef } from 'react';
 
 const ChatContainer = () => {
 
-    const {messages,getMessages,isMessagesLoading,selectedUser,subscribeToMessages,unsubscribeFromMessages,getSmartReplies,hasMore,loadOlderMessages} = useChatStore();
+    const {messages,getMessages,isMessagesLoading,selectedUser,subscribeToMessages,unsubscribeFromMessages,getSmartReplies,hasMore,loadOlderMessages,isOlderMessagesLoading} = useChatStore();
     const {authUser} = useAuthStore();
     const messageEndRef = useRef(null);
 
@@ -49,8 +49,9 @@ const ChatContainer = () => {
             <button
               className="btn btn-xs btn-ghost"
               onClick={loadOlderMessages}
+              disabled={isOlderMessagesLoading}
             >
-              Load earlier messages
+              {isOlderMessagesLoading ? "Loading..." : "Load earlier messages"}
             </button>
           </div>
         )}

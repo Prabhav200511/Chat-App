@@ -100,26 +100,40 @@ export const getMessages = async (req, res) => {
         const conversation = await getAuthorizedConversation(conversationId, myId);
         if (!conversation) return respondNotFound(res);
 
-        const { limit = 30, before } = req.validated?.query ?? {};
+        const { limit = 30, before, beforeId } = req.validated?.query ?? {};
 
         const query = { conversationId: conversation._id };
         if (before) {
-            query.createdAt = { $lt: new Date(before) };
+            const cursorTime = new Date(before);
+            if (beforeId) {
+                query.$or = [
+                    { createdAt: { $lt: cursorTime } },
+                    { createdAt: cursorTime, _id: { $lt: beforeId } },
+                ];
+            } else {
+                // Keep supporting existing timestamp-only API callers.
+                query.createdAt = { $lt: cursorTime };
+            }
         }
 
         // Fetch one extra row to detect whether an older page exists.
         const rows = await Message.find(query)
-            .sort({ createdAt: -1 })
+            .sort({ createdAt: -1, _id: -1 })
             .limit(limit + 1)
             .lean();
 
         const hasMore = rows.length > limit;
         const messages = rows.slice(0, limit).reverse();
+        const oldest = messages[0];
 
         return res.status(200).json({
             conversationId: conversation._id,
             messages,
             hasMore,
+            nextCursor: hasMore ? {
+                before: oldest.createdAt.toISOString(),
+                beforeId: oldest._id.toString(),
+            } : null,
         });
     } catch (error) {
         console.error("Error in getMessages:", error);

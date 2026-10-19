@@ -29,6 +29,6 @@ const messageSchema = mongoose.Schema(
 );
 
 // Cursor index for GET /app/messages/:id?before=...
-messageSchema.index({ conversationId: 1, createdAt: -1 });
+messageSchema.index({ conversationId: 1, createdAt: -1, _id: -1 });
 
 export default mongoose.model("Message", messageSchema);

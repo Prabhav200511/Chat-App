@@ -13,12 +13,26 @@ proving it all holds.
 | WS0 testability refactor | ✅ done (`src/app.js`, slim `index.js`, `initSocket`/`getIO`) |
 | WS1 socket auth + room membership | ✅ done (server + frontend `withCredentials`, ack-based join) |
 | WS2 REST membership guards | ✅ done (`lib/conversationAccess.js`, all controllers 404 on non-members) |
-| WS3 schema + pagination | ✅ done (models, controller, frontend; **migration script not yet run against dev DB**) |
+| WS3 schema + pagination | ✅ implemented with stable `(createdAt, _id)` cursors (models, controller, frontend; **migration script not yet run against dev DB**) |
 | WS4 validation + rate limits | ✅ done (zod schemas wired into routes, limiters mounted) |
-| WS5 tests + CI | ✅ 36 tests / 6 suites **green** locally; `ci.yml` written (unverified until pushed) |
+| WS5 tests + CI | ✅ 63 backend tests / 6 suites and 11 frontend regression tests **green** locally; frontend production build passes; hosted CI must be checked after pushing |
 
 **Remaining manual steps:** run `node scripts/migrate-phase1.js` against the dev/prod DB
 (requires a hydrated `MONGO_URL`), then a two-browser smoke test; push to GitHub to see CI green.
+
+### Review fixes (2026-10-19)
+
+- Malformed socket acknowledgement arguments no longer crash the server; room IDs are normalized.
+- Pagination returns `nextCursor: { before, beforeId }` and uses `_id` to break timestamp ties.
+  The browser sends both fields; timestamp-only callers remain supported for compatibility.
+- Chat updates merge against current state and deduplicate REST/socket responses. Selection
+  generations reject stale reads, sends, older pages and smart replies after switching chats.
+- Message and profile uploads require supported image MIME types and canonical base64 data URLs
+  within the 4 MiB string limit. Text-only browser payloads with `image: null` remain valid.
+- Profile updates exclude password hashes from their response.
+- Frontend concurrency tests now run in CI before the production build. Locally, newly installed
+  frontend test dependencies hit OneDrive read errors; the same 11 tests passed using the working
+  backend Vitest 3.2.7 runtime against the frontend source and dependency tree.
 
 ## Environment notes (2026-10-19)
 
@@ -100,7 +114,7 @@ DB connect, and `server.listen()`; `lib/socket.js` owns the express app + http s
 whole array; client-supplied `timestamp` drives latency logs.
 
 - **`message.model.js`:** add `conversationId` (required, ref Conversation); **remove**
-  `receiverId`; index `{ conversationId: 1, createdAt: -1 }`. Ordering uses server
+  `receiverId`; index `{ conversationId: 1, createdAt: -1, _id: -1 }`. Ordering uses server
   `createdAt` only — client `timestamp` is no longer accepted (zod strips it).
 - **`conversation.model.js`:** **remove the `messages` array** — messages live on
   `Message.conversationId`. Kills the push+save race in `sendMessage` and the 16MB doc risk.
@@ -114,12 +128,15 @@ whole array; client-supplied `timestamp` drives latency logs.
   ```
   Backfill works for group chats too (their messages are in the conv array even though
   `receiverId` was garbage).
-- **`getMessages` pagination** (cursor = `before` ISO date, fetch `limit+1` to detect more):
+- **`getMessages` pagination** (cursor = `before` ISO date + `beforeId`, fetch `limit+1` to detect more):
   ```js
   const query = { conversationId: conv._id };
-  if (before) query.createdAt = { $lt: new Date(before) };
-  const rows = await Message.find(query).sort({ createdAt: -1 }).limit(limit + 1).lean();
-  res.json({ conversationId, messages: rows.slice(0, limit).reverse(), hasMore });
+  if (before && beforeId) query.$or = [
+    { createdAt: { $lt: new Date(before) } },
+    { createdAt: new Date(before), _id: { $lt: beforeId } }
+  ];
+  const rows = await Message.find(query).sort({ createdAt: -1, _id: -1 }).limit(limit + 1).lean();
+  res.json({ conversationId, messages: rows.slice(0, limit).reverse(), hasMore, nextCursor });
   ```
   Default `limit=30`, max 100. Response keeps the `messages` key → minimal frontend churn.
 - **`sendMessage`** becomes: authorize → `Message.create({ conversationId, senderId, text, image })`

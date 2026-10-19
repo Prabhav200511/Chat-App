@@ -58,27 +58,29 @@ export function initSocket(httpServer) {
         io.emit("getOnlineUsers", [...userSocketMap.keys()]);
 
         socket.on("join_room", async (conversationId, ack) => {
+            const respond = typeof ack === "function" ? ack : () => {};
             try {
-                if (!mongoose.Types.ObjectId.isValid(conversationId)) {
-                    ack?.({ ok: false, message: "Invalid conversation id" });
+                if (typeof conversationId !== "string" || !mongoose.Types.ObjectId.isValid(conversationId)) {
+                    respond({ ok: false, message: "Invalid conversation id" });
                     return;
                 }
+                const roomId = conversationId.toLowerCase();
 
                 // Membership check: only participants may join the room.
                 const exists = await Conversation.exists({
-                    _id: conversationId,
+                    _id: roomId,
                     participants: userId,
                 });
 
                 if (!exists) {
-                    ack?.({ ok: false, message: "Conversation not found" });
+                    respond({ ok: false, message: "Conversation not found" });
                     return;
                 }
 
-                socket.join(conversationId);
-                ack?.({ ok: true });
+                await socket.join(roomId);
+                respond({ ok: true });
             } catch {
-                ack?.({ ok: false, message: "Could not join conversation" });
+                respond({ ok: false, message: "Could not join conversation" });
             }
         });
 

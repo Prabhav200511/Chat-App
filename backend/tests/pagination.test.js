@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeAll, vi } from "vitest";
 import Message from "../src/models/message.model.js";
-import Conversation from "../src/models/conversation.model.js";
 import {
     signup,
     createConversation,
@@ -33,10 +32,7 @@ describe("message pagination", () => {
         const docs = [];
         for (let i = 0; i < TOTAL; i++) {
             docs.push({
-                // New schema field (kept once WS3 lands)
                 conversationId: convAB._id,
-                // Legacy field: keeps the seed valid on the old schema
-                receiverId: bob.user._id,
                 senderId: i % 2 === 0 ? alice.user._id : bob.user._id,
                 text: `msg-${i}`,
             });
@@ -55,13 +51,6 @@ describe("message pagination", () => {
             }))
         );
 
-        // Old schema keeps message ids on the conversation; new schema drops
-        // the field, so this is a no-op after the migration.
-        const conv = await Conversation.findById(convAB._id);
-        if (conv.messages !== undefined) {
-            conv.messages = inserted.map((m) => m._id);
-            await conv.save();
-        }
     });
 
     it("returns only the first page by default", async () => {
@@ -98,12 +87,11 @@ describe("message pagination", () => {
 
     it("pages backwards through the whole history without gaps or dupes", async () => {
         const seen = [];
-        let before;
+        let cursor;
         let guard = 0;
 
         for (;;) {
-            const query = { limit: 30 };
-            if (before) query.before = before;
+            const query = { limit: 30, ...cursor };
 
             const res = await getMessages(alice, convAB._id, query);
             expect(res.status).toBe(200);
@@ -111,7 +99,11 @@ describe("message pagination", () => {
             seen.push(...res.body.messages);
             if (!res.body.hasMore) break;
 
-            before = res.body.messages[0].createdAt;
+            cursor = res.body.nextCursor;
+            expect(cursor).toEqual({
+                before: res.body.messages[0].createdAt,
+                beforeId: res.body.messages[0]._id,
+            });
             if (++guard > 20) throw new Error("pagination did not terminate");
         }
 
@@ -127,5 +119,56 @@ describe("message pagination", () => {
         );
         expect(ordered[0].text).toBe("msg-0");
         expect(ordered[ordered.length - 1].text).toBe(`msg-${TOTAL - 1}`);
+    });
+
+    it("retains timestamp-only cursors for existing API clients", async () => {
+        const res = await getMessages(alice, convAB._id, {
+            before: new Date(BASE_TIME + 10 * 1000).toISOString(),
+        });
+        expect(res.status).toBe(200);
+        expect(res.body.messages).toHaveLength(10);
+        expect(res.body.nextCursor).toBeNull();
+    });
+
+    it.each([
+        { beforeId: "not-an-id", before: new Date(BASE_TIME).toISOString() },
+        { beforeId: "0123456789abcdef01234567" },
+    ])("rejects an invalid composite cursor: %j", async (query) => {
+        expect((await getMessages(alice, convAB._id, query)).status).toBe(400);
+    });
+
+    it("pages through timestamp ties without skipping or repeating messages", async () => {
+        const carol = await signup("Pagination Carol");
+        const tied = await createConversation(alice, carol.email);
+        const docs = Array.from({ length: 73 }, (_, i) => ({
+            conversationId: tied._id,
+            senderId: alice.user._id,
+            text: `tied-${i}`,
+            // A 65-message tie spans multiple page boundaries, with rows on each side.
+            createdAt: new Date(BASE_TIME + (i < 5 ? -1000 : i >= 70 ? 1000 : 0)),
+        }));
+        await Message.insertMany(docs);
+
+        let cursor;
+        const seen = [];
+        for (let page = 0; page < 4; page++) {
+            const res = await getMessages(alice, tied._id, { limit: 30, ...cursor });
+            expect(res.status).toBe(200);
+            seen.push(...res.body.messages);
+            if (!res.body.hasMore) {
+                expect(res.body.nextCursor).toBeNull();
+                break;
+            }
+            cursor = res.body.nextCursor;
+            expect(cursor).toBeTruthy();
+        }
+        expect(seen).toHaveLength(docs.length);
+        expect(new Set(seen.map((m) => m._id)).size).toBe(docs.length);
+        const chronological = [...seen].sort((a, b) =>
+            Date.parse(a.createdAt) - Date.parse(b.createdAt) || a._id.localeCompare(b._id)
+        );
+        const expected = await Message.find({ conversationId: tied._id })
+            .sort({ createdAt: 1, _id: 1 }).lean();
+        expect(chronological.map((m) => m._id)).toEqual(expected.map((m) => String(m._id)));
     });
 });

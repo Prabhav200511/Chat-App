@@ -95,6 +95,22 @@ describe("IDOR: socket identity and room membership", () => {
         expect(getRecieverSocketId(dave.user._id)).toBeUndefined();
     });
 
+    it.each(["not-a-function", 42, { ok: true }])(
+        "survives a malformed acknowledgement argument: %j",
+        async (malformedAck) => {
+            const socket = await connectSocket(alice.cookie);
+            socket.emit("join_room", "invalid-id", malformedAck);
+            // A subsequent acknowledgement proves the handler and server survived.
+            expect(await joinRoom(socket, convAC._id)).toEqual({ ok: true });
+        }
+    );
+
+    it("normalizes uppercase conversation IDs to the broadcast room", async () => {
+        const socket = await connectSocket(alice.cookie);
+        expect(await joinRoom(socket, convAC._id.toUpperCase())).toEqual({ ok: true });
+        expect(getIO().sockets.adapter.rooms.get(convAC._id)?.has(socket.id)).toBe(true);
+    });
+
     it("only lets participants join a conversation room", async () => {
         const socketA = await connectSocket(alice.cookie);
         const socketB = await connectSocket(bob.cookie);
